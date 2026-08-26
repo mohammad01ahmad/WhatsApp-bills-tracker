@@ -1,4 +1,4 @@
-name: Backend CI
+name: Backend CI/CD
 
 on:
   push:
@@ -37,12 +37,12 @@ jobs:
       - name: Test
         run: npm test
 
-  # Deploy is added once the friend's GCP VM exists (Phase 6). It mirrors the
-  # calorie tracker's: SSH in, git reset --hard, docker compose up -d --build,
-  # driven by DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY / DEPLOY_PATH secrets.
-  #
   # deploy:
   #   needs: verify
+  #   # push to main only, and only once the VM + secrets exist (set the repo
+  #   # variable DEPLOY_ENABLED=true — see docs/PRD.md §14). Until then this job
+  #   # is skipped, not failed.
+  #   if: github.event_name == 'push' && vars.DEPLOY_ENABLED == 'true'
   #   runs-on: ubuntu-latest
   #   steps:
   #     - name: SSH in and redeploy

@@ -19,10 +19,18 @@ export const billJsonSchema = {
 const CONFIDENCES = ['high', 'medium', 'low']
 
 /** Strip a ```json … ``` (or bare ```) fence the loose model may wrap output in. */
-function stripFence(s: string): string {
-    const t = s.trim()
-    const m = t.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/i)
-    return m ? m[1].trim() : t
+/**
+ * Pull the JSON object out of a model response — tolerates a ```json fence, a
+ * reasoning/prose prefix or suffix, and leading/trailing whitespace. Returns the
+ * first `{` … last `}` slice, or the trimmed input if there's no brace pair.
+ * ponytail: naive outermost-brace slice; breaks if the model emits `{`/`}` in
+ * prose *before* the real JSON. Reasoning is disabled in the request to avoid
+ * that; add a brace-depth scanner here if it still shows up in logs.
+ */
+function extractJson(s: string): string {
+    const open = s.indexOf('{')
+    const close = s.lastIndexOf('}')
+    return open !== -1 && close > open ? s.slice(open, close + 1) : s.trim()
 }
 
 /**
@@ -33,7 +41,7 @@ function stripFence(s: string): string {
 export function parseBillResponse(raw: string): Bill {
     let obj: unknown
     try {
-        obj = JSON.parse(stripFence(raw))
+        obj = JSON.parse(extractJson(raw))
     } catch {
         throw new Error(`bill JSON parse failed: ${raw.slice(0, 200)}`)
     }

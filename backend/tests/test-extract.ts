@@ -34,6 +34,15 @@ import { parseBillResponse } from '../src/llm/billSchema.ts'
     assert.equal(b.total, null)
 }
 
+// prose / reasoning around the JSON (a reasoning model that still leaks text)
+{
+    const b = parseBillResponse(
+        'Looking at the receipt, the total is 40 AED.\n{"is_receipt": true, "total": 40, "merchant": "Carrefour", "bill_date": null, "category": "Food", "confidence": "high"}\nHope that helps!',
+    )
+    assert.equal(b.total, 40)
+    assert.equal(b.merchant, 'Carrefour')
+}
+
 // not a receipt → every other field is normalised to null regardless of what the model returned
 {
     const b = parseBillResponse('{"is_receipt":false,"total":999,"merchant":"junk","bill_date":"nonsense","category":"nope","confidence":"bad"}')

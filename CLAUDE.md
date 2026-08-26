@@ -2,15 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: backend built, not yet run against WhatsApp
+## Status: tested end-to-end, not yet deployed to prod
 
-`backend/` is scaffolded and the full flow is implemented. `npm run typecheck` and `npm test`
-(pure units) pass. **Not yet exercised against a live WhatsApp connection or a real Supabase
-project** — that's the next step (test on Ahmad's number). The `docs/PRD.md` build plan
-Phases 4–5 are what's outstanding. Keep this file matched to the code as it changes — don't
-let it drift into fiction (the sibling `whatsapp-calorie-tracker/CLAUDE.md` already claims
-`npm start` runs `src/whatsapp/socket.ts` and `npm test` runs one test; both are wrong now —
-don't inherit that).
+`backend/` is complete and **tested end-to-end** on Ahmad's number (self-chat mode) against
+the live Supabase project — receipt → `RECEIPT PROCESSED` reply → `bills` row, all commands,
+`/undo`. `npm run typecheck` + `npm test` green. Repo pushed to
+`github.com/mohammad01ahmad/WhatsApp-bills-tracker`; CI/CD wired.
+
+**Outstanding: deploy to the friend's GCP VM against a dedicated WhatsApp number** — the
+runbook is `docs/PRD.md` §14, and there are **no code changes needed** for it (§13). Keep
+this file matched to the code — don't let it drift into fiction (the sibling
+`whatsapp-calorie-tracker/CLAUDE.md` claims `npm start` runs `src/whatsapp/socket.ts` and
+`npm test` runs one test; both wrong now — don't inherit that).
 
 ## What this is
 
@@ -38,12 +41,12 @@ non-receipt photos.
 
 ### Two environments (see `docs/PRD.md` §11)
 
-One codebase, two `.env`s. **Testing:** runs on Ahmad's laptop, linked to Ahmad's own
-WhatsApp number, `TARGET_CHAT_JID` = his self-chat or a throwaway group. **Production:** runs
-on the friend's own GCP VM, linked to the dedicated bot number, `TARGET_CHAT_JID` = the
-business group. Both use the `:free` Gemma slug and the same dedicated Supabase project —
-single tenant, no per-row `user_id`, so the only differences are the WhatsApp identity, the
-target chat, and where it runs.
+One codebase. **Testing:** Ahmad's laptop, Ahmad's WhatsApp number, `TARGET_CHAT_JID` unset
+(self-chat mode). **Production:** the friend's GCP VM, the dedicated bot number,
+`TARGET_CHAT_JID` = the business group's `@g.us`. The model
+(`dots-studio/dots-3-note-preview:free`, hardcoded) and the Supabase project (`blmqcc…`,
+single tenant, no `user_id`) are the same everywhere — the only differences are the WhatsApp
+identity, `TARGET_CHAT_JID`, the OpenRouter key, and where it runs.
 
 ## Commands
 
@@ -149,24 +152,24 @@ replace this with select-then-insert. `tests/test-db.ts` is what proves the inde
 exists — if it's ever dropped, idempotency silently becomes a no-op and every duplicate
 double-confirms.
 
-## JSON handling — model slug decides it
+## JSON handling — the `:free` suffix decides it
 
-**The highest-risk part of the build.** The model is `google/gemma-4-31b-it:free` on
-OpenRouter in **both environments** (verified: image input, 262k context). `client.ts` keys
-its JSON strategy off the `:free` suffix of `OPENROUTER_MODEL`:
+**The highest-risk part of the build.** The model is **hardcoded** in `client.ts`:
+`const MODEL = 'dots-studio/dots-3-note-preview:free'` (a free vision model — Gemma's `:free`
+pool 429'd during testing, paid slugs need OpenRouter credit). `client.ts` keys its JSON
+strategy off the `:free` suffix — `const STRICT = !MODEL.endsWith(':free')`:
 
-- **`:free` slug (the default, `!STRICT`).** No `structured_outputs`. Expected JSON shape in
+- **`:free` (`!STRICT`, current).** Treated as no `structured_outputs`. Expected JSON shape in
   the prompt; `response_format: { type: "json_object" }` (best effort); strip a
   ```` ```json ``` ```` fence if present; hand-validate in `billSchema.ts` with a few
   `typeof` / enum-membership checks (no schema library); on a parse *or* validation failure
   **retry exactly once**, then give up and send the generic error reply.
-- **paid `google/gemma-4-31b-it` (`STRICT`) — fallback only.** Advertises `structured_outputs`,
+- **A paid slug (`STRICT`) — fallback only.** `qwen/qwen2.5-vl-72b-instruct` (needs OpenRouter
+  credit) or `google/gemma-4-31b-it` (with a BYO Google key) advertise `structured_outputs`,
   so `client.ts` switches to `response_format: { type: "json_schema", strict: true }` and
-  drops the retry. Flip `OPENROUTER_MODEL` to this if `:free` can't return usable JSON often
-  enough in real use — no code change. Costs a few US cents/day at business volume.
+  drops the retry. Switching = editing `MODEL` and pushing (auto-deploy ships it).
 
-Both paths already exist in `client.ts`; `const STRICT = !MODEL.endsWith(':free')` selects.
-The expected object either way:
+Both paths already exist in `client.ts`. The expected object either way:
 
 ```json
 { "is_receipt": true, "total": 128.50, "merchant": "ADNOC",
@@ -176,10 +179,17 @@ The expected object either way:
 `is_receipt: false` → `parseBillResponse` normalises every other field to null, bot ignores
 silently. `bill_date: null` → `socket.ts` falls back to the message's Dubai date. `category`
 missing on a receipt → defaults to `Others`. `confidence` is stored, not acted on in v1.
+`parseBillResponse` grabs the first-`{`-to-last-`}` slice, so stray prose/reasoning around the
+JSON is tolerated (`billSchema.ts` `extractJson`).
 
-**Verify empirically in Phase 3** (against real receipts *and* non-receipts): does the model
-discriminate `is_receipt` reliably, and does `total` match the paper receipt? Fall back to
-the paid slug only if `:free` proves too unreliable.
+**dots-3 is a reasoning model.** The request sends `reasoning: { enabled: false }` — with it
+on, the chain-of-thought ate the token budget and the JSON came back truncated
+(`finish_reason: length`, caught explicitly now). `max_tokens: 2000` for headroom.
+
+**OpenRouter free-tier ceiling:** 50 requests/day for an account that never bought credit
+(1000 after ≥$10), plus occasional upstream 429s on the shared free pool. Watch the logs for
+`openrouter 429` / `response truncated` — if either recurs, $10 of OpenRouter credit unlocks
+the paid slugs and the 1000/day tier.
 
 ## Connection lifecycle & reliability
 
@@ -313,17 +323,23 @@ Early in a period the number is legitimately small; that's expected, not a bug.
 
 ## Deploy note
 
-**Production runs on the friend's own GCP account** — his own Always-Free `e2-micro`, his
-billing, his blast radius. Not co-located with the calorie bot (the free tier is one
-`e2-micro` per account anyway). Same Docker setup as the calorie tracker:
-`restart: on-failure:10`, capped `json-file` logging, `auth_session/` bind mount. Outbound
-only (WhatsApp, OpenRouter, Supabase) — no inbound firewall rules.
+**Full runbook: `docs/PRD.md` §14.** Production runs on the **friend's own GCP account** —
+his Always-Free `e2-micro`, his billing, his blast radius. Docker: `restart: on-failure:10`
+(clean `exit(0)` = dead creds, stays down; non-zero = restart ×10), capped `json-file`
+logging, `auth_session/` bind mount. Outbound only — no inbound firewall.
 
-- The bot is a linked device on the **dedicated bot number**, not on Ahmad's or the friend's
-  personal WhatsApp. It needs its **own** `auth_session/`.
-- `docker-compose.yml` still **sets an explicit top-level `name:`** — cheap insurance so a
-  bare `backend` dir name never collides with anything else on the box (e.g. if Ahmad ever
-  runs the test instance on the same machine as something else).
+- The bot is a linked device on the **dedicated bot number** — its own `auth_session/`,
+  paired by a fresh QR scan **on the VM**. Never copy the testing `auth_session/` (that's
+  Ahmad's number).
+- `TARGET_CHAT_JID` is set to the business group's `@g.us` after the first connect (§14
+  step 8) — that's what locks the bot to the group (see §8.1).
+- **Auto-deploy is on:** `.github/workflows/backend-cd.yml` runs typecheck + tests then SSHes
+  in and `git reset --hard` + `docker compose up -d --build` on every push to `main` touching
+  `backend/`. Needs four repo secrets (`DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY` /
+  `DEPLOY_PATH`) and repo variable `DEPLOY_ENABLED=true` — until that's set the deploy job is
+  **skipped**, not failed. `.env` and `auth_session/` are never touched by a deploy.
+- `docker-compose.yml` sets an explicit top-level `name:` — cheap insurance against a bare
+  `backend` dir-name collision.
 
 ### Testing alongside the calorie tracker (Ahmad's number)
 

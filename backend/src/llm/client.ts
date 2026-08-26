@@ -1,10 +1,9 @@
 import { CATEGORIES, type Bill } from '../utils/constants.ts'
 import { billJsonSchema, parseBillResponse } from './billSchema.ts'
 
-const MODEL = process.env.OPENROUTER_MODEL || 'google/gemma-4-31b-it:free'
-// The ":free" slug doesn't advertise structured_outputs, so it gets the loose
-// path (json_object + fence-strip + one retry). The paid slug does → strict
-// json_schema, no retry. Flip OPENROUTER_MODEL to switch; no code change.
+
+const MODEL = 'dots-studio/dots-3-note-preview:free'
+
 const STRICT = !MODEL.endsWith(':free')
 
 const SYSTEM = `You read a photo of a receipt or invoice and return a single JSON object.
@@ -36,8 +35,14 @@ async function callOnce(body: unknown): Promise<Bill> {
     if (!res.ok) throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 300)}`)
 
     const data = await res.json()
-    const content = data?.choices?.[0]?.message?.content
+    const choice = data?.choices?.[0]
+    const content = choice?.message?.content
     if (!content) throw new Error(`openrouter: no content in response: ${JSON.stringify(data).slice(0, 300)}`)
+    // dots-3 is a reasoning model — if it burned the token budget thinking, the
+    // JSON comes back cut off. Name that instead of a confusing parse error.
+    if (choice?.finish_reason === 'length') {
+        throw new Error(`openrouter: response truncated (finish_reason=length) — raise max_tokens or disable reasoning: ${String(content).slice(0, 200)}`)
+    }
     return parseBillResponse(content)
 }
 
@@ -46,7 +51,12 @@ export async function extractBill(imageBuffer: Buffer, mimeType: string): Promis
     const dataUrl = `data:${mimeType};base64,${imageBuffer.toString('base64')}`
     const body: Record<string, unknown> = {
         model: MODEL,
-        max_tokens: 1024,
+        // Headroom: a plain object needs ~120 tokens, but reasoning models spend
+        // more before answering even with reasoning off. Free model — tokens are free.
+        max_tokens: 2000,
+        // No chain-of-thought for a fixed-shape extraction; it only eats the
+        // token budget and cuts the JSON off (dots-3 is a reasoning model).
+        reasoning: { enabled: false },
         messages: [
             { role: 'system', content: SYSTEM },
             {

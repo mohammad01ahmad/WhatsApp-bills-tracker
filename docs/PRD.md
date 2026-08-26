@@ -11,7 +11,7 @@
 An automated expense-logging system for a small business. Employees drop photos of receipts
 and invoices into a shared WhatsApp group. A bot — a **dedicated WhatsApp number** that sits
 in the group as an ordinary participant — picks up each image via **Baileys**, sends it to a
-vision LLM (**Gemma via OpenRouter**) that extracts the total amount, merchant, date, and
+vision LLM (**via OpenRouter**) that extracts the total amount, merchant, date, and
 category, writes a row to **Supabase**, and replies in the group with a confirmation and
 today's running total. Text commands (`/today`, `/week`, `/month`, `/undo`) return spend
 summaries in the same group. A dashboard comes later.
@@ -58,10 +58,10 @@ Out of scope as metrics: per-employee analytics, approval workflows, anything ga
   is evaluated. No caption or prefix required.
 - **Dedicated WhatsApp number** for the bot, linked via Baileys as a companion device, added
   to the group as an ordinary participant (not admin).
-- **Vision extraction:** `google/gemma-4-31b-it:free` via OpenRouter in both environments —
-  loose JSON, fence-strip, validate, one retry. The paid `google/gemma-4-31b-it` slug (strict
-  JSON schema) is a fallback, flipped via `OPENROUTER_MODEL` with no code change, if `:free`
-  reliability disappoints. Returns `{ is_receipt, total, merchant, bill_date, category, confidence }`.
+- **Vision extraction:** `dots-studio/dots-3-note-preview:free` via OpenRouter, hardcoded in
+  `src/llm/client.ts` — loose JSON, fence-strip, validate, one retry. A paid slug (strict JSON
+  schema) is the fallback: a one-line `MODEL` edit, if the free model's reliability disappoints.
+  Returns `{ is_receipt, total, merchant, bill_date, category, confidence }`.
 - **An "is this a receipt?" gate.** Non-receipts are silently ignored — a debug log line and
   nothing else. No reply.
 - **Supabase (Postgres)** — a **dedicated project for this business**, `bills` table. Single
@@ -118,7 +118,7 @@ Baileys `messages.upsert` fires inside the Node process
 download media (buffer, with reuploadRequest) → size-cap
   │
   ▼
-OpenRouter · Gemma vision → { is_receipt, total, merchant, bill_date, category, confidence }
+OpenRouter · dots-3 vision → { is_receipt, total, merchant, bill_date, category, confidence }
   │
   ├─ !is_receipt or total == null → debug-log, stop. NO REPLY.
   │
@@ -147,6 +147,24 @@ in the group. `/undo` must be a reply — it deletes the one bill the quoted mes
 
 Same in-process event-handler model as the calorie tracker — **no webhook, no HTTP
 endpoint**. The "API" is `sock.ev.on('messages.upsert', …)`.
+
+### 8.1 How the bot points only at the group
+
+The chat filter in `socket.ts` has **two modes**, keyed off whether `TARGET_CHAT_JID` is set:
+
+| `TARGET_CHAT_JID` | The bot acts on |
+|---|---|
+| **set** (production) | *only* that JID. A message matches if `jidNormalizedUser(m.key.remoteJid)` **or** `m.key.remoteJidAlt` equals it. Everything else — DMs to the bot number, any other group it gets added to — is dropped **before** any media download, LLM call, or DB write. |
+| **unset** (testing) | *only* the linked account's own self-chat, detected from `sock.user` (id / lid / phoneNumber, both JID fields — v7 flips self-chat between the phone-number form and `…@lid`). A dedicated bot number's self-chat is empty, so this mode is effectively idle in production. |
+
+Neither mode uses a `fromMe` check (that would also block self-chat testing). Loop safety is
+`sentByBot` — a Set of the ids the process has sent; the bot skips those.
+
+Any chat the bot **sees but isn't watching** has its JID logged **once** at `info`
+(`noteForeignChat`): `saw a message in a chat this bot is not watching — set TARGET_CHAT_JID
+to this jid to watch it`. That line is both the setup mechanism (§14 step 8) and a
+**tripwire** — if it ever appears for an unexpected chat in production, the bot was added
+somewhere it shouldn't be.
 
 ### Incoming event shape (from Baileys)
 
@@ -220,18 +238,25 @@ the calorie tracker. GCP Always-Free `e2-micro`, Docker, `restart: on-failure:10
 
 ## 9. Vision LLM call structure (OpenRouter)
 
-**Model:** `google/gemma-4-31b-it:free` via OpenRouter in **both environments**, selected by
-the `OPENROUTER_MODEL` env var. The client keys its JSON strategy off the `:free` suffix:
+**Model:** `dots-studio/dots-3-note-preview:free` via OpenRouter, **hardcoded in
+`src/llm/client.ts`** (`const MODEL`) — not an env var. It's coupled to the prompt and the
+JSON branch below and doesn't vary per deployment. The client keys its JSON strategy off the
+`:free` suffix:
 
-- **`:free` slug (default, test + prod).** Does not advertise `structured_outputs` — the JSON
-  shape goes in the prompt, `response_format: { type: "json_object" }`, and the response is
-  fence-stripped, hand-validated, and retried exactly once on failure.
-- **`google/gemma-4-31b-it` (paid) — fallback only.** Advertises `structured_outputs`, so the
-  client switches to a strict `response_format: { type: "json_schema", strict: true }`
-  (no fence-strip, no retry). Flip `OPENROUTER_MODEL` to this if `:free` can't return usable
-  JSON often enough in real use — no code change. Costs a few US cents/day at business volume.
+- **`:free` slug (current).** Treated as no `structured_outputs` — the JSON shape goes in the
+  prompt, `response_format: { type: "json_object" }`, response fence-stripped, hand-validated,
+  retried exactly once on failure.
+- **A paid slug — fallback only.** `qwen/qwen2.5-vl-72b-instruct` (needs OpenRouter credit) or
+  `google/gemma-4-31b-it` (with a BYO Google AI Studio key) both advertise `structured_outputs`,
+  so the client switches to strict `response_format: { type: "json_schema", strict: true }`
+  (no fence-strip, no retry). Switching is a one-line edit to `MODEL` + push (auto-deploy).
 
-Verified on OpenRouter: image input, 262k context, both slugs.
+**Free-tier ceiling:** OpenRouter caps `:free` models at **50 requests/day** for an account
+that has never purchased credit (1000/day after ≥$10). At a busy day's receipt volume this
+can 429 — accepted for v1 (see §16); the remedy is $10 of OpenRouter credit, which also
+unlocks the paid slugs.
+
+Verified on OpenRouter: `dots-studio/dots-3-note-preview:free` accepts image input.
 
 Single-turn, stateless, one call per image. A system message (task: read a receipt/invoice
 image; if the image isn't one, set `is_receipt: false`) plus a user message carrying the
@@ -303,16 +328,17 @@ alter table bills enable row level security;
 
 ## 11. Environments
 
-One codebase, two configs. What changes is the WhatsApp identity and the infrastructure —
-everything else is `.env`.
+One codebase. What changes between testing and production is the WhatsApp identity, the one
+env var `TARGET_CHAT_JID`, and where it runs — nothing else.
 
 | | Testing | Production |
 |---|---|---|
 | Runs on | Ahmad's laptop, `npm start` | Friend's GCP `e2-micro`, `docker compose up -d` |
 | Linked to | Ahmad's WhatsApp number | The dedicated "Bills Bot" number |
 | `TARGET_CHAT_JID` | **unset** — self-chat mode | The business group's `…@g.us` JID |
-| `OPENROUTER_MODEL` | `google/gemma-4-31b-it:free` | `google/gemma-4-31b-it:free` |
-| Supabase project | The bills-tracker project | The same project (single tenant, no per-row `user_id`) |
+| OpenRouter key | Ahmad's | The friend's |
+| Model | `dots-studio/dots-3-note-preview:free` — hardcoded, same everywhere | |
+| Supabase project | `blmqcc…` — same everywhere (single tenant, no per-row `user_id`) | |
 
 ### Testing — does it interfere with the calorie tracker?
 
@@ -357,7 +383,7 @@ whatsapp-bills-tracker/
 │   │   │   ├── fatal.ts             # COPIED verbatim — the one place allowed to process.exit
 │   │   │   └── constants.ts         # COPIED verbatim — reconnect tuning knobs
 │   │   ├── llm/
-│   │   │   ├── client.ts            # OpenRouter call, image content part; strict-or-loose JSON keyed off the :free suffix
+│   │   │   ├── client.ts            # OpenRouter call, image part; MODEL hardcoded here; strict-or-loose JSON by the :free suffix
 │   │   │   └── billSchema.ts        # JSON schema + parseBillResponse (fence-strip, validate, is_receipt normalise)
 │   │   ├── db/
 │   │   │   ├── client.ts            # service role key, throws at boot if SUPABASE_URL / SERVICE_ROLE_KEY missing
@@ -384,7 +410,7 @@ whatsapp-bills-tracker/
 │
 ├── supabase/schema.sql             # bills table + index; RLS on, no policy
 ├── .github/workflows/
-│   └── backend-cd.yml               # verify job (typecheck + tests); deploy job commented until the VM exists
+│   └── backend-cd.yml               # verify (typecheck + tests) → deploy (SSH redeploy on push to main)
 │
 ├── .gitignore  .mcp.json
 ├── CLAUDE.md
@@ -393,43 +419,170 @@ whatsapp-bills-tracker/
 
 No `dashboard/` yet.
 
-## 13. Getting started — Baileys with a dedicated number
+## 13. Production readiness
 
-1. Get a prepaid SIM / eSIM. Register WhatsApp on it once, on any spare phone (OTP needed
-   once).
-2. Run the backend in the foreground; scan the QR from that phone's WhatsApp → Linked
-   Devices → Link a Device.
-3. The friend adds the dedicated number to the business group (participant, not admin).
-4. **Find `TARGET_CHAT_JID`:** leave it unset on the first run. Have someone post in the
-   group — the bot logs the group's JID once (`saw a message in a chat this bot is not
-   watching`). Copy that `…@g.us` value into `.env`, restart.
-5. Confirm: a real receipt photo logs and replies; a job-site photo is ignored with no
-   reply.
-6. `Ctrl+C`, then `docker compose up -d`.
+**No code changes are needed to go to production.** What's built handles it:
 
-## 14. Getting started — GCP (the friend's account)
+| Code-ready | |
+|---|---|
+| Chat filter | Two modes (§8.1) — production sets `TARGET_CHAT_JID` and the bot acts on that group only. |
+| `is_receipt` gate | Silent on non-receipt photos. |
+| Reliability | `reconnect.ts` backoff + terminal-state policy; `fatal.ts` exit codes ↔ `restart: on-failure:10`. |
+| Idempotency | Unique `whatsapp_message_id`; re-delivered events don't double-log. |
+| Loop guard | `sentByBot` — the bot never reprocesses its own replies. |
+| Error handling | Generic replies only; provider/DB error text never reaches the chat. |
+| Packaging | `Dockerfile` + `docker-compose.yml` (capped logs, `auth_session` bind mount, explicit `name:`). |
+| Repo | Pushed to `github.com/mohammad01ahmad/WhatsApp-bills-tracker` (public). |
+| CI/CD | `.github/workflows/backend-cd.yml` — typecheck + tests on every push, then SSH redeploy. |
 
-Same as the calorie tracker's setup, run in **the friend's own GCP account** so billing,
-blast radius, and ownership are his:
+**Outstanding — all infra / config, done once during deploy (§14):**
 
-- `e2-micro`, `us-central1`, Ubuntu 24.04, 10 GB standard disk — within Always-Free.
-- SSH-in-browser from the Console. Install Docker (`curl -fsSL https://get.docker.com | sudo sh`).
-- Clone the repo, create `backend/.env`, foreground first run for the QR, then
-  `docker compose up -d`.
-- `restart: on-failure:10` — a clean `exit(0)` (dead WhatsApp creds) stays down for a human;
-  a non-zero exit restarts up to 10 times.
-- Set a **budget alert** (Billing → Budgets & alerts).
-- Nothing inbound — the process makes only outbound connections (WhatsApp, OpenRouter,
-  Supabase). Default firewall is fine.
-- **(Optional) auto-deploy:** `.github/workflows/backend-cd.yml` runs the verify job
-  (typecheck + tests) on push. The deploy job is commented out — uncomment it once the VM
-  exists and add `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY` / `DEPLOY_PATH` secrets.
+- [ ] Dedicated WhatsApp number — a prepaid SIM or eSIM with WhatsApp registered on it (one
+      OTP, on any spare phone). This phone scans the pairing QR.
+- [ ] The friend's own Google Cloud account (Always-Free covers this).
+- [ ] The friend's own OpenRouter account + API key (the model is free; the account is not
+      Ahmad's).
+- [ ] `backend/.env` created on the VM (never committed).
+- [ ] **Fresh QR pairing on the VM** against the dedicated number — never copy the testing
+      `auth_session/` (that's Ahmad's number).
+- [ ] `TARGET_CHAT_JID` set to the real business-group JID (§14 step 8).
+- [ ] A GCP billing budget alert.
+
+**Accepted for v1** (see §16): the 50 OpenRouter req/day free ceiling; `/undo` open to every
+group member; no alert if the bot is silently removed from the group; confidence stored but
+not shown.
+
+## 14. Deploying to GCP — step by step
+
+Runs in **the friend's own GCP account** (his billing, his blast radius, his data). Do §13's
+prerequisites first.
+
+1. **Create the VM.** Console → Compute Engine → VM instances → **Create instance**:
+   - Machine type **`e2-micro`**; Region **`us-central1`** (or `us-west1` / `us-east1` — the
+     only Always-Free regions).
+   - Boot disk: **Ubuntu 24.04 LTS**, **30 GB** standard persistent disk (Always-Free ceiling).
+   - Leave all firewall boxes unchecked — nothing needs to reach the VM.
+   - Create. No static IP needed.
+
+2. **Connect.** Click **SSH** next to the instance — a browser terminal opens. No key files.
+
+3. **Install Docker:**
+   ```bash
+   curl -fsSL https://get.docker.com | sudo sh
+   sudo usermod -aG docker $USER
+   newgrp docker
+   ```
+
+4. **Clone the repo:**
+   ```bash
+   git clone https://github.com/mohammad01ahmad/WhatsApp-bills-tracker.git
+   cd WhatsApp-bills-tracker/backend
+   ```
+
+5. **Create `backend/.env`** (`nano .env`):
+   ```
+   OPENROUTER_API_KEY=<the friend's OpenRouter key>
+   SUPABASE_URL=https://blmqccdupkejrvdbbydm.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=<the sb_secret_… key from Supabase → Project Settings → API Keys>
+   LOG_LEVEL=info
+   ```
+   Leave `TARGET_CHAT_JID` out for now — it's set in step 8. (The model is hardcoded in
+   `src/llm/client.ts`, not here.)
+
+6. **First run — pair the dedicated number.** In the foreground so the QR is visible:
+   ```bash
+   docker compose up --build
+   ```
+   A QR code prints in the SSH terminal. On the phone holding the **dedicated number**:
+   WhatsApp → Settings → Linked Devices → **Link a Device** → scan it. Wait for
+   `WhatsApp connection opened { mode: 'self-chat (TARGET_CHAT_JID unset)' }` and a
+   `Bills bot connected ✅` message in the dedicated number's own chat. Confirm
+   `ls auth_session/` now shows files (the session, persisted to the host).
+
+7. **Add the bot to the group.** A group admin adds the dedicated number as a participant
+   (not an admin).
+
+8. **Point the bot at the group.** With the container still running from step 6, have anyone
+   post any message in the group. The log prints, **once**:
+   ```
+   {"level":30,…,"jid":"120363XXXXXXXXXXXXXXX@g.us",…,
+    "msg":"saw a message in a chat this bot is not watching — set TARGET_CHAT_JID to this jid to watch it"}
+   ```
+   `Ctrl+C` to stop. `nano .env` and add:
+   ```
+   TARGET_CHAT_JID=120363XXXXXXXXXXXXXXX@g.us
+   ```
+
+9. **Verify the lock.**
+   ```bash
+   docker compose up
+   ```
+   Startup log now reads `mode: 'chat 120363…@g.us'`. Check all three:
+   - Receipt photo **in the group** → `RECEIPT PROCESSED` reply + a row in `bills`.
+   - Non-receipt photo **in the group** → no reply (`skipped: not a receipt` in the log).
+   - Receipt photo **DM'd to the bot number** → nothing (`skipped: wrong chat`).
+
+10. **Go always-on.** `Ctrl+C`, then:
+    ```bash
+    docker compose up -d
+    ```
+    `restart: on-failure:10` restarts on any crash (up to 10 in a row) and survives VM
+    reboots. A clean `exit(0)` — dead WhatsApp credentials — deliberately stays down; that
+    needs a human and a fresh QR (see below).
+
+11. **Budget alert.** Console → Billing → Budgets & alerts → create a budget (e.g. $1) as a
+    tripwire. Staying inside Always-Free should never bill.
+
+### Set up auto-deploy (once, after step 10)
+
+```bash
+ssh-keygen -t ed25519 -f ~/deploy_key -N ""
+cat ~/deploy_key.pub >> ~/.ssh/authorized_keys
+```
+
+GitHub repo → **Settings → Secrets and variables → Actions**:
+
+- **Secrets** tab → add four:
+
+  | Secret | Value |
+  |---|---|
+  | `DEPLOY_HOST` | the VM's external IP |
+  | `DEPLOY_USER` | your SSH username on the VM |
+  | `DEPLOY_SSH_KEY` | the full contents of `~/deploy_key` (the private key) |
+  | `DEPLOY_PATH` | `/home/<DEPLOY_USER>/WhatsApp-bills-tracker` |
+
+- **Variables** tab → add `DEPLOY_ENABLED` = `true`. (The deploy job is *skipped*, not
+  failed, until this is set — so pushes are safe before the VM exists.)
+
+From then on, every push to `main` touching `backend/` runs typecheck + tests, then SSHes in
+and `git reset --hard origin/main` + `docker compose up -d --build`. **`.env` and
+`auth_session/` are never touched** by a deploy.
+
+### Manual redeploy (if you skip auto-deploy, or to force one)
+
+```bash
+cd ~/WhatsApp-bills-tracker && git pull && cd backend && docker compose up -d --build
+```
+
+### If the linked device is removed / credentials die
+
+`reconnect.ts` treats dead creds as terminal — the process exits `0` and stays down. Re-pair:
+
+```bash
+cd ~/WhatsApp-bills-tracker/backend
+docker compose down
+sudo rm -rf auth_session/*        # the container writes these as root
+docker compose up                # foreground — rescan the QR with the dedicated number
+# once "WhatsApp connection opened" appears: Ctrl+C, then
+docker compose up -d
+```
 
 ## 15. Build plan
 
-**Status:** Phases 1–3 and 5 are implemented (`backend/` scaffolded, full flow written,
-`npm run typecheck` + `npm test` green). Outstanding: Phase 4 (run against a live WhatsApp
-connection — testing on Ahmad's number) and Phases 6–8.
+**Status:** Phases 1–5 done — backend built, tested end-to-end on Ahmad's number in
+self-chat mode against the live Supabase project, formatting finalised, repo pushed, CI/CD
+wired. **Outstanding: Phase 6** (deploy to the friend's GCP VM against the dedicated number —
+follow §14) and Phases 7–8.
 
 ### Phase 1 — Scaffold
 Repo, `backend/` folder, `.env` handling, git. **Copy** `socket.ts`, `reconnect.ts`,
@@ -438,16 +591,15 @@ calorie tracker. Deps: `@whiskeysockets/baileys`, `@supabase/supabase-js`, `pino
 `qrcode-terminal`.
 
 ### Phase 2 — Data layer
-New Supabase project. Run `supabase/schema.sql` (`bills` table + index; RLS on, no policy).
-`tests/test-db.ts` confirms insert lands, a duplicate `whatsapp_message_id` is rejected,
-`periodTotal` sees the row, and `/undo` by the confirmation id works.
+Supabase project (`blmqcc…`). `supabase/schema.sql` applied (`bills` table + index; RLS on,
+no policy). `tests/test-db.ts` confirmed insert, duplicate rejection, `periodTotal`, and
+`/undo` by the confirmation id — all green against the live table.
 
-### Phase 3 — Extraction in isolation (no WhatsApp)
-`llm/client.ts` + `billSchema.ts` against a local folder of sample photos — real receipts
-*and* several non-receipts (job sites, screenshots, blurry shots). Iterate the prompt.
-**Verify two things:** `is_receipt` discriminates reliably, and `total` matches the paper
-receipt. `:free` is the default; fall back to the paid slug only if `:free` can't return
-usable JSON often enough.
+### Phase 3 — Extraction
+`llm/client.ts` + `billSchema.ts`. Model settled at `dots-studio/dots-3-note-preview:free`
+(hardcoded) after Gemma's `:free` upstream pool 429'd and paid slugs needed OpenRouter
+credit. `:free`→loose path with a one-shot retry. Fall back to a paid slug (one-line `MODEL`
+edit) if reliability drops.
 
 ### Phase 4 — WhatsApp locally
 Baileys on Ahmad's number, its own `auth_session/`, `TARGET_CHAT_JID` = self-chat or a test
@@ -461,8 +613,10 @@ bot's confirmation), plus the bare-`/undo` and no-match cases. Run for a few day
 receipts Ahmad photographs himself.
 
 ### Phase 6 — Dedicated number + production infra
-SIM, register, link. The friend's GCP VM, Docker, re-pair on the server. Friend adds the bot
-to the real group. Grab the group JID from the log, set `TARGET_CHAT_JID`. Detached.
+The full runbook is **§14**. In short: SIM + WhatsApp registration; the friend's GCP
+`e2-micro`; Docker; QR-pair the dedicated number on the VM; add the bot to the group; set
+`TARGET_CHAT_JID` from the log; verify the lock (group receipt logs, DM does nothing);
+`docker compose up -d`; wire the four auto-deploy secrets.
 
 ### Phase 7 — Live use & hardening
 Run in the real group. Spot-audit logged totals against paper. Watch for false positives on
@@ -484,10 +638,14 @@ to the group.
   they explicitly reply to — a bare `/undo` does nothing), or spam `/month`. *Accepted for
   v1* for simplicity. *Upgrade path:* an `ADMIN_JIDS` allowlist gating `/undo` (and
   optionally the summaries), checked against `key.participant`.
-- **Free-model JSON reliability.** `:free` in both environments. The fence-strip +
-  retry-once wrapper covers most parse failures; a persistent failure sends a generic
-  "couldn't read that receipt" reply, not a crash. *Fallback:* flip `OPENROUTER_MODEL` to the
-  paid `google/gemma-4-31b-it` (strict JSON schema) if real-use reliability is too low.
+- **OpenRouter free-tier ceiling — 50 requests/day.** For an account that has never bought
+  credit, OpenRouter caps all `:free` models at 50 req/day (1000 after ≥$10). A busy day
+  exceeds this and receipts start 429'ing until midnight UTC — the bot replies "couldn't read
+  that receipt". *Accepted for v1.* *Remedy:* $10 of OpenRouter credit lifts the cap to
+  1000/day and unlocks paid slugs. Watch the logs for `openrouter 429` frequency.
+- **Free-model JSON reliability.** The fence-strip + retry-once wrapper covers most parse
+  failures; a persistent failure sends the generic reply, not a crash. *Fallback:* a one-line
+  `MODEL` edit to a paid slug (strict JSON schema).
 - **Duplicate physical receipts.** Two photos of one receipt = two rows = double count.
   *Accepted*; `/undo` + the dashboard catch it. *Upgrade path:* soft-warn when
   merchant+total+`bill_date` already exists that day.

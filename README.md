@@ -37,9 +37,9 @@ data entry, no new app — is the whole idea.
   trust-boundary widening vs. the calorie tracker — see `CLAUDE.md` § Flow.)
 - **`is_receipt` gate:** the model flags non-receipts (job-site photos, screenshots, chat
   images); the bot ignores those silently — no reply, no row.
-- **Extraction:** `google/gemma-4-31b-it:free` via OpenRouter (both environments) — loose
-  JSON, fence-strip, validate, one retry. The paid `google/gemma-4-31b-it` slug (strict JSON
-  schema) is a fallback, flipped via `OPENROUTER_MODEL`. Returns
+- **Extraction:** `dots-studio/dots-3-note-preview:free` via OpenRouter, hardcoded in
+  `src/llm/client.ts` — loose JSON, fence-strip, validate, one retry. A paid slug (strict JSON
+  schema) is the fallback (one-line `MODEL` edit). Returns
   `{ is_receipt, total, merchant, bill_date, category, confidence }`.
 - **Storage:** a **dedicated Supabase project for this business**, new `bills` table. Single
   tenant — no `user_id`. The receipt image is **not** stored.
@@ -75,8 +75,8 @@ data entry, no new app — is the whole idea.
 3. Backend filters: the watched chat (the group in prod, the linked account's self-chat when
    `TARGET_CHAT_JID` is unset)? not a message the bot itself sent? is it an image? Then
    downloads the buffer (with `reuploadRequest`, since WhatsApp media URLs expire) and size-caps it.
-4. Image → OpenRouter (Gemma `:free` vision): JSON shape in the prompt, fence-strip,
-   hand-validate, one retry. (Paid slug + strict schema is the `OPENROUTER_MODEL` fallback.)
+4. Image → OpenRouter (`dots-3-note-preview:free` vision): JSON shape in the prompt,
+   fence-strip, hand-validate, one retry. (Paid slug + strict schema is the fallback.)
 5. **`is_receipt` false or `total` null → debug-log and stop. No reply.**
 6. Row inserted into `bills` **before** replying. A duplicate `whatsapp_message_id` →
    unique-index violation → treated as "already logged", no second confirmation.
@@ -117,15 +117,19 @@ alter table bills enable row level security;   -- no policy: not readable with t
 
 ## 6. Extraction
 
-**Model:** `google/gemma-4-31b-it:free` via OpenRouter in **both environments**, set by
-`OPENROUTER_MODEL`. The client keys its JSON strategy off the `:free` suffix:
+**Model:** `dots-studio/dots-3-note-preview:free` via OpenRouter, **hardcoded** in
+`src/llm/client.ts` (`const MODEL`). The client keys its JSON strategy off the `:free` suffix:
 
-- **`:free` (default):** no strict schema — the shape goes in the prompt, output is
-  fence-stripped, hand-validated, and retried once on failure.
-- **`google/gemma-4-31b-it` (paid) — fallback:** supports `structured_outputs`, so the client
-  switches to a strict `response_format: { type: "json_schema", strict: true }` and drops the
-  retry. Flip `OPENROUTER_MODEL` if `:free` reliability is too low. See `CLAUDE.md`
-  § "JSON handling — model slug decides it".
+- **`:free` (current):** no strict schema — the shape goes in the prompt, output is
+  fence-stripped, hand-validated, retried once on failure.
+- **A paid slug — fallback:** `qwen/qwen2.5-vl-72b-instruct` (needs OpenRouter credit) or
+  `google/gemma-4-31b-it` (BYO Google key) support `structured_outputs`, so the client
+  switches to strict `json_schema` and drops the retry. Switching = editing `MODEL` + push.
+  See `CLAUDE.md` § "JSON handling".
+
+**Free-tier cap:** OpenRouter allows 50 `:free` requests/day for an account that's never
+bought credit (1000 after ≥$10). A busy day 429s until midnight UTC — add $10 credit if that
+bites. See `docs/PRD.md` §16.
 
 **Prompt shape:** a system message stating the task (read a receipt/invoice image; if it
 isn't one, set `is_receipt: false`) followed by the image as a base64 `data:` URL.
@@ -211,24 +215,25 @@ Formatters live in `backend/src/utils/functions.ts` (`formatReceipt`, `formatSum
 
 ## 8. Environments
 
-One codebase, two `.env` files.
+One codebase. Testing vs. production differ only in the WhatsApp identity, `TARGET_CHAT_JID`,
+the OpenRouter key, and where it runs.
 
 | | Testing | Production |
 |---|---|---|
 | Runs on | Ahmad's laptop | Friend's GCP `e2-micro` |
-| Linked to | Ahmad's WhatsApp number (own `auth_session/`, own QR — never share the calorie tracker's) | The dedicated "Bills Bot" number |
+| Linked to | Ahmad's WhatsApp number (own `auth_session/`, own QR) | The dedicated "Bills Bot" number |
 | `TARGET_CHAT_JID` | **unset** → self-chat mode | The business group's `…@g.us` |
-| `OPENROUTER_MODEL` | `google/gemma-4-31b-it:free` | `google/gemma-4-31b-it:free` |
-| Supabase project | The bills-tracker project | The same project (single tenant, no `user_id`) |
+| OpenRouter key | Ahmad's | The friend's |
+| Model | `dots-studio/dots-3-note-preview:free` — hardcoded in `src/llm/client.ts` | |
+| Supabase project | `blmqcc…` — same everywhere (single tenant, no `user_id`) | |
 
 `backend/.env` (copy `.env.example`):
 
 ```
-OPENROUTER_API_KEY=          # required
-OPENROUTER_MODEL=            # google/gemma-4-31b-it:free (both); paid slug is the fallback
-SUPABASE_URL=                # required — the dedicated bills-tracker project
-SUPABASE_SERVICE_ROLE_KEY=   # required — bypasses RLS; never NEXT_PUBLIC_-prefixed
-TARGET_CHAT_JID=             # blank → watch the linked account's self-chat (testing). set → a group.
+OPENROUTER_API_KEY=          # required (the model is hardcoded in src/llm/client.ts, not here)
+SUPABASE_URL=                # required — the bills-tracker project
+SUPABASE_SERVICE_ROLE_KEY=   # required — the sb_secret_… key; bypasses RLS; never NEXT_PUBLIC_-prefixed
+TARGET_CHAT_JID=             # blank → self-chat (testing). set → the group's …@g.us (production, §14 step 8)
 LOG_LEVEL=                   # optional — trace|debug|info|warn|error|fatal|silent, default info
 ```
 
@@ -245,30 +250,38 @@ one to images and `/today|/week|/month|/undo`. Simplest loop: leave `TARGET_CHAT
 (self-chat mode), `npm start`, send a receipt photo to yourself. Remove the test linked
 device from WhatsApp → Linked Devices when done.
 
-## 9. First run (production)
+## 9. Deploying to production
 
-1. Register the dedicated number's WhatsApp on a spare phone (OTP once).
-2. On the friend's VM: `cd backend && docker compose up --build` in the foreground.
-3. Scan the QR from that phone's **WhatsApp → Linked Devices → Link a Device**.
-4. The friend adds the dedicated number to the business group (participant, not admin).
-5. **Find `TARGET_CHAT_JID`:** leave it blank — the bot logs the group's JID once when
-   someone posts there (`saw a message in a chat this bot is not watching`). Copy that
-   `…@g.us` value into `.env`, restart.
-6. Confirm a real receipt logs and a non-receipt photo is ignored with no reply.
-7. `Ctrl+C`, then `docker compose up -d`.
+The full step-by-step runbook — GCP VM, Docker, pairing the dedicated number, pointing the
+bot at the group, auto-deploy — is **`docs/PRD.md` §13–§14**. In brief:
+
+```bash
+# on the friend's GCP e2-micro
+git clone https://github.com/mohammad01ahmad/WhatsApp-bills-tracker.git
+cd WhatsApp-bills-tracker/backend
+nano .env                       # OPENROUTER_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, LOG_LEVEL=info
+docker compose up --build       # foreground — scan the QR with the DEDICATED number
+# add the bot to the group; someone posts; copy the …@g.us JID from the log
+nano .env                       # add TARGET_CHAT_JID=…@g.us
+docker compose up               # verify: group receipt logs; DM to the bot number does nothing
+# Ctrl+C
+docker compose up -d
+```
+
+**No code changes are needed for production** — see `docs/PRD.md` §13.
 
 ## 10. If the connection breaks
 
-Same as the calorie tracker. `reconnect.ts` treats 401/403/419 (dead creds) and 500/411
-(broken session) as permanent — the process exits `0` and Docker's `on-failure:10` leaves it
-down for a human. 440 (session replaced) retries once after a 5-minute cooldown. Recovering
-from a permanent disconnect means a fresh QR pairing:
+`reconnect.ts` treats 401/403/419 (dead creds) and 500/411 (broken session) as permanent —
+the process exits `0` and Docker's `on-failure:10` leaves it down for a human. 440 (session
+replaced) retries once after a 5-minute cooldown. Recovering from a permanent disconnect
+means a fresh QR pairing:
 
 ```bash
 cd backend
 docker compose down
 sudo rm -rf auth_session/*      # container writes these as root
-docker compose up               # foreground, scan the new QR
+docker compose up               # foreground, scan the new QR with the dedicated number
 # once "WhatsApp connection opened" appears: Ctrl+C, then
 docker compose up -d
 ```
