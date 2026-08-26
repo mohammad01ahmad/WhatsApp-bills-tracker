@@ -1,0 +1,57 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-cd.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-cd.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Pure unit tests only — no network, no DB. test-db.ts stays manual because
+      # it hits the real Supabase table.
+      - name: Test
+        run: npm test
+
+  # Deploy is added once the friend's GCP VM exists (Phase 6). It mirrors the
+  # calorie tracker's: SSH in, git reset --hard, docker compose up -d --build,
+  # driven by DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY / DEPLOY_PATH secrets.
+  #
+  # deploy:
+  #   needs: verify
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: SSH in and redeploy
+  #       uses: appleboy/ssh-action@v1
+  #       with:
+  #         host: ${{ secrets.DEPLOY_HOST }}
+  #         username: ${{ secrets.DEPLOY_USER }}
+  #         key: ${{ secrets.DEPLOY_SSH_KEY }}
+  #         script: |
+  #           cd ${{ secrets.DEPLOY_PATH }}
+  #           git fetch origin main && git reset --hard origin/main
+  #           cd backend && docker compose up -d --build

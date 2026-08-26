@@ -1,0 +1,26 @@
+{
+  "name": "whatsapp-bills-tracker-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=23.6.0"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "typecheck": "tsc",
+    "test": "node tests/test-backoff.ts && node tests/test-utils.ts && node tests/test-extract.ts && node tests/test-handler.ts"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@supabase/supabase-js": "^2.110.7",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "pino": "^9.14.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^7.0.2"
+  }
+}

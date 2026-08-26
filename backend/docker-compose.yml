@@ -1,0 +1,24 @@
+# Explicit name — Compose otherwise derives the project name from the directory
+# ("backend"), which would collide with the sibling calorie tracker's backend dir
+# if both ever run on one host.
+name: whatsapp-bills-tracker
+
+services:
+  bot:
+    build: .
+    # on-failure (not unless-stopped): a clean exit(0) from fatal.ts means "dead
+    # WhatsApp creds, needs a human" and must NOT restart. Non-zero exits restart,
+    # capped at 10 so a boot-time crash loop can't run forever.
+    restart: on-failure:10
+    env_file: .env
+    volumes:
+      # Baileys session credentials — must survive container recreation on every
+      # redeploy, or the bot loses its WhatsApp link and needs a fresh QR scan.
+      - ./auth_session:/app/auth_session
+    # Docker's json-file default is unbounded. Cap it — the sibling repo once wrote
+    # a reconnect-loop log line every ~120ms straight to disk with nothing to stop it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
