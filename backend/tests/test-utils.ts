@@ -9,6 +9,7 @@ import {
     formatReceipt,
     formatRemoved,
     formatSummary,
+    formatUpdated,
 } from '../src/utils/functions.ts'
 
 const DAY_MS = 86_400_000
@@ -98,6 +99,15 @@ assert.deepEqual(formatRemoved({ merchant: 'ADNOC', total: 128.5, category: 'Pet
     ' · Amount: 128.50 AED',
     ' · Company: ADNOC',
     ' · Expense: Petrol',
+])
+
+// formatUpdated — same layout as formatRemoved, RECEIPT UPDATED header
+assert.deepEqual(formatUpdated({ merchant: null, total: 999.99, category: 'Others' }).split('\n'), [
+    'RECEIPT UPDATED',
+    RULE,
+    ' · Amount: 999.99 AED',
+    ' · Company: Unknown',
+    ' · Expense: Others',
 ])
 
 // formatSummary — empty period

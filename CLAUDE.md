@@ -122,9 +122,14 @@ tracker:
    (see below). Nullable — if the send fails the row still exists and is undoable via the
    receipt image.
 
-**If the message is a text command** (`/today`, `/week`, `/month`, `/undo`): match it in
-`messageHandler.ts`, run the query in `db/bills.ts`, reply into the group. **All four are
-open to every group member** (v1 — no admin gate). `/undo` is special:
+**If the message is a text command** (`/today`, `/week`, `/month`, `/undo`, `/fix`,
+`/receipt`): match it in `messageHandler.ts`, run the query in `db/bills.ts`, reply into the
+group. **All open to every group member** (v1 — no admin gate). `parseCommand` returns
+`{ cmd, rest }` — `rest` is the trimmed, original-case remainder after the verb (the merchant
+on `/receipt` must keep its casing). The `COMMAND_RE` alternation is derived from `COMMANDS`,
+not hand-written twice.
+
+`/undo` is special:
 
 - It **must be a reply**. Read the quoted message id from
   `m.message.extendedTextMessage.contextInfo.stanzaId`.
@@ -136,6 +141,30 @@ open to every group member** (v1 — no admin gate). `/undo` is special:
 - **Bare `/undo`** (no quoted message) → delete nothing, reply a one-line hint. Deliberate:
   a bare `/undo` deleting "the most recent bill" globally would, in a multi-submitter group,
   usually delete the wrong person's row.
+
+`/fix <amount>` corrects a logged bill's **amount only** (category mistakes stay `/undo` +
+resend). Same shape as `/undo`: **must be a reply**, resolves the row by the same two anchors
+(`whatsapp_message_id` OR `reply_message_id`, via `updateTotalByQuotedId`), `.select()`
+returns the new values. Row found → `formatUpdated(...)`, a `RECEIPT UPDATED` block; no match →
+the same `Nothing logged for that message.`; bad/missing amount or bare `/fix` → a usage hint.
+`Number(updated.total)` at the call site — Postgres `numeric` comes back as a string.
+
+`/receipt <amount> <category> [company]` logs a bill with **no photo** (cash payments, lost
+receipts). `category` is a keyword or `1`–`4` (`resolveCategory` alias table:
+petrol/fuel/gas·1, food/meal·2, materials/material/hardware/hw·3, others/other/misc·4 —
+`CATEGORIES` stays the source of truth); `company` is optional trailing text →
+`merchant` or null. `parseReceiptArgs` returns the parsed args **or a string** to send back
+as the error reply. The bill uses **the `/receipt` message's own `key.id`** as
+`whatsapp_message_id` — that's the idempotency key and the primary `/undo`/`/fix` anchor, so
+no schema change. `bill_date` = `dubaiDate(timestampMs(m))`, `confidence: null`. Then the
+photo path's tail verbatim: `insertBill` before replying, `null` → `skipped: already logged`
+no reply, `formatReceipt` with today's total (`.catch(() => null)`), `setReplyMessageId` from
+the confirmation.
+
+An image **with a caption** routes to `handleImage` and the caption is never parsed — `/fix`
+and `/receipt` written as a photo caption do nothing. `handleCommand` handles `undo`/`fix`/
+`receipt` in early-return blocks, then a `PERIODS` record keyed by exactly `today|week|month`
+— a new `Command` without a handler fails to typecheck there.
 
 If the LLM call or the insert throws, the per-message `catch` sends a generic "couldn't read
 that receipt" reply, **not** `error.message` — provider/DB error text can carry request

@@ -68,9 +68,11 @@ Out of scope as metrics: per-employee analytics, approval workflows, anything ga
   tenant, so no `user_id` / per-row ownership.
 - **Confirmation reply** in the group after each logged bill: a `RECEIPT PROCESSED` block
   (amount / company / expense) + today's running total.
-- **Commands, open to every group member:** `/today`, `/week`, `/month`, and `/undo` (which
-  must be sent as a reply to the receipt or the bot's confirmation, and removes only that
-  one bill).
+- **Commands, open to every group member:** `/today`, `/week`, `/month`, `/undo` (a reply to
+  the receipt or the bot's confirmation; removes only that one bill), `/fix <amount>` (a
+  reply, same two anchors; corrects that bill's **amount only**), and
+  `/receipt <amount> <category> [company]` (logs a bill with **no photo** — cash payments,
+  lost receipts; `category` is a keyword or `1`–`4`, `company` optional).
 - **Calendar periods**, Asia/Dubai (UTC+4, no DST) fixed offset: `/today` since Dubai
   midnight, `/week` since Monday 00:00, `/month` since the 1st 00:00.
 - **Category:** fixed 4-value enum — `Petrol`, `Food`,
@@ -137,9 +139,9 @@ reply in group:
     · 312.00 AED (3 receipts)
 ```
 
-Command path: filter to the group, match `/today|/week|/month|/undo`, query `bills`, reply
-in the group. `/undo` must be a reply — it deletes the one bill the quoted message points at
-(§8 Commands).
+Command path: filter to the group, match `/today|/week|/month|/undo|/fix|/receipt`, query
+`bills`, reply in the group. `/undo` and `/fix` must be a reply — they act on the one bill
+the quoted message points at. `/receipt` logs a bill with no photo (§8 Commands).
 
 *A rendered architecture diagram is a TODO — the ASCII flow above is the source of truth for now.*
 
@@ -198,13 +200,15 @@ somewhere it shouldn't be.
 
 ### Commands
 
-All four are open to every group member (v1). Matched case-insensitively on a trimmed
-message.
+All open to every group member (v1). Matched case-insensitively on a trimmed message;
+`parseCommand` returns `{ cmd, rest }` (the raw-cased remainder after the verb).
 
 | Command | Behavior |
 |---|---|
 | `/today` `/week` `/month` | Sum `bills` over the calendar period (Asia/Dubai); reply with a `TODAY'S / THIS WEEK'S / THIS MONTH'S EXPENSES` block — per-category lines (sorted desc) + a `TOTAL`. |
 | `/undo` | **Must be sent as a reply** to a message. Delete the one bill whose `whatsapp_message_id` *or* `reply_message_id` equals `contextInfo.stanzaId` (the quoted message's id). |
+| `/fix <amount>` | **Must be a reply**, same two anchors as `/undo`. Update that bill's `total` (amount only — no category/merchant edit). Reply a `RECEIPT UPDATED` block with the new values. Bad/missing amount or bare `/fix` → a usage hint; no match → *"Nothing logged for that message."* |
+| `/receipt <amount> <category> [company]` | Log a bill with **no photo**. `category` is a keyword or `1`–`4` (petrol/fuel·1, food·2, materials/hardware/hw·3, others·4); trailing text is the optional `company`. Uses the command message's own id as `whatsapp_message_id` (idempotency + `/undo`/`/fix` anchor). `bill_date` = message date, `confidence` = null. Reply is the normal `RECEIPT PROCESSED` block. Parse failure → a usage line naming the keywords, no row written. |
 
 **`/undo` details:**
 
@@ -634,10 +638,10 @@ to the group.
   throwaway number (a ban doesn't touch anyone's real line), `markOnlineOnConnect: false`,
   replies only on real triggers. *Fallback:* the official WhatsApp Cloud API (free ~1,000
   conversations/month, needs Meta Business verification).
-- **Every command open to everyone.** Any member can `/undo` any bill (though only the one
-  they explicitly reply to — a bare `/undo` does nothing), or spam `/month`. *Accepted for
-  v1* for simplicity. *Upgrade path:* an `ADMIN_JIDS` allowlist gating `/undo` (and
-  optionally the summaries), checked against `key.participant`.
+- **Every command open to everyone.** Any member can `/undo` or `/fix` any bill (though only
+  the one they explicitly reply to), add a bogus `/receipt`, or spam `/month`. *Accepted for
+  v1* for simplicity. *Upgrade path:* an `ADMIN_JIDS` allowlist gating `/undo` / `/fix` /
+  `/receipt` (and optionally the summaries), checked against `key.participant`.
 - **OpenRouter free-tier ceiling — 50 requests/day.** For an account that has never bought
   credit, OpenRouter caps all `:free` models at 50 req/day (1000 after ≥$10). A busy day
   exceeds this and receipts start 429'ing until midnight UTC — the bot replies "couldn't read
@@ -666,6 +670,8 @@ to the group.
 - `ADMIN_JIDS` allowlist for destructive / sensitive commands.
 - Low-confidence handling — ask for a clearer photo instead of logging.
 - Duplicate soft-detection.
-- A correction command (`/fix <amount>` on the last bill) instead of delete-and-resend.
+- Editing a bill's **category or merchant** (v1 `/fix` is amount-only), and an audit trail
+  for edits (`updated_at` / a history row — a fixed bill is currently indistinguishable from
+  a correctly-logged one).
 - Multi-currency, if the business ever buys abroad.
 - Migration to the official WhatsApp Cloud API if Baileys reliability degrades at volume.

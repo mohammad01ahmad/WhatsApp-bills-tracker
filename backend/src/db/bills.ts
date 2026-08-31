@@ -60,3 +60,20 @@ export async function undoByQuotedId(stanzaId: string) {
     if (error) throw error
     return data && data.length ? data[0] : null
 }
+
+/**
+ * Set a new total on the one bill the user quoted with `/fix` — same two anchors
+ * as `/undo` (the receipt image's id or the bot's confirmation id). Returns the
+ * updated row (with the new total) or null if nothing matched.
+ */
+export async function updateTotalByQuotedId(stanzaId: string, total: number) {
+    if (!SAFE_ID.test(stanzaId)) return null
+    const { data, error } = await supabase
+        .from('bills')
+        .update({ total })
+        .or(`whatsapp_message_id.eq.${stanzaId},reply_message_id.eq.${stanzaId}`)
+        .select()
+
+    if (error) throw error
+    return data && data.length ? data[0] : null
+}

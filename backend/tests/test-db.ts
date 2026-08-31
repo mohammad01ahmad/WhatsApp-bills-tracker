@@ -1,7 +1,7 @@
 // DB path check — no WhatsApp, no LLM. Hits the real `bills` table and cleans up
 // after itself, so it's run manually, not by `npm test`.
 // Run: node --env-file=.env tests/test-db.ts
-import { insertBill, periodTotal, setReplyMessageId, undoByQuotedId } from '../src/db/bills.ts'
+import { insertBill, periodTotal, setReplyMessageId, undoByQuotedId, updateTotalByQuotedId } from '../src/db/bills.ts'
 import { supabase } from '../src/db/client.ts'
 
 const msgId = 'TEST_' + Date.now()
@@ -31,6 +31,17 @@ console.log('ok: periodTotal includes the row')
 
 await setReplyMessageId(first.id, replyId)
 console.log('ok: reply_message_id set')
+
+// /fix by the confirmation id — returns the row with the new total
+const fixed = await updateTotalByQuotedId(replyId, 200)
+if (!fixed || fixed.id !== first.id || Number(fixed.total) !== 200) {
+    throw new Error('FAIL: updateTotalByQuotedId did not return the row with the updated total')
+}
+console.log('ok: /fix updates the total by confirmation id')
+
+const noFix = await updateTotalByQuotedId('NOSUCHID_' + Date.now(), 50)
+if (noFix !== null) throw new Error('FAIL: /fix on an unknown id should return null')
+console.log('ok: /fix on an unknown id returns null')
 
 // undo by the confirmation id (the other anchor)
 const removed = await undoByQuotedId(replyId)

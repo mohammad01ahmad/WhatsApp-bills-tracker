@@ -61,6 +61,11 @@ export function formatRemoved(bill: BillFields): string {
     return ['RECEIPT REMOVED', RULE, ...billLines(bill)].join('\n')
 }
 
+/** Reply after /fix changes a bill's amount. Shows the corrected values. */
+export function formatUpdated(bill: BillFields): string {
+    return ['RECEIPT UPDATED', RULE, ...billLines(bill)].join('\n')
+}
+
 /** Reply to /today /week /month. `header` is e.g. "TODAY'S EXPENSES". */
 export function formatSummary(
     header: string,

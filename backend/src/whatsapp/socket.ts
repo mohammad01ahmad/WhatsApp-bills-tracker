@@ -9,11 +9,11 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom'
 import type { Logger } from 'pino'
 import qrcode from 'qrcode-terminal'
-import { parseCommand, type Command } from './messageHandler.ts'
+import { parseAmount, parseCommand, parseReceiptArgs, type Command } from './messageHandler.ts'
 import { reconnectPlan } from './reconnect.ts'
 import { fatal } from './fatal.ts'
 import { extractBill } from '../llm/client.ts'
-import { insertBill, periodTotal, setReplyMessageId, undoByQuotedId } from '../db/bills.ts'
+import { insertBill, periodTotal, setReplyMessageId, undoByQuotedId, updateTotalByQuotedId } from '../db/bills.ts'
 import {
     dubaiDate,
     dubaiDayStart,
@@ -22,6 +22,7 @@ import {
     formatReceipt,
     formatRemoved,
     formatSummary,
+    formatUpdated,
 } from '../utils/functions.ts'
 import { logger } from '../utils/logger.js'
 
@@ -173,12 +174,15 @@ async function handleImage(sock: Sock, m: WAMessage, log: Logger) {
     log.info('confirmation sent')
 }
 
-async function handleCommand(sock: Sock, m: WAMessage, cmd: Command, log: Logger) {
+// stanzaId of the message a command is replying to, if any.
+const quotedId = (m: WAMessage) => m.message?.extendedTextMessage?.contextInfo?.stanzaId
+
+async function handleCommand(sock: Sock, m: WAMessage, cmd: Command, rest: string, log: Logger) {
     const jid = m.key.remoteJid!
 
     if (cmd === 'undo') {
         // /undo must be a reply — the quoted message tells us which bill to remove.
-        const stanzaId = m.message?.extendedTextMessage?.contextInfo?.stanzaId
+        const stanzaId = quotedId(m)
         if (!stanzaId) {
             await send(sock, jid, 'Reply /undo to a receipt or to my confirmation for the bill you want to remove.', log)
             return
@@ -198,12 +202,86 @@ async function handleCommand(sock: Sock, m: WAMessage, cmd: Command, log: Logger
         return
     }
 
-    const spec =
-        cmd === 'today'
-            ? { since: dubaiDayStart(), header: "TODAY'S EXPENSES" }
-            : cmd === 'week'
-              ? { since: dubaiWeekStart(), header: "THIS WEEK'S EXPENSES" }
-              : { since: dubaiMonthStart(), header: "THIS MONTH'S EXPENSES" }
+    if (cmd === 'fix') {
+        // Same two anchors as /undo — reply to the photo or to the bot's confirmation.
+        const stanzaId = quotedId(m)
+        if (!stanzaId) {
+            await send(sock, jid, 'Reply /fix <amount> to a receipt or to my confirmation to correct its amount.', log)
+            return
+        }
+        const total = parseAmount(rest)
+        if (total === undefined) {
+            await send(sock, jid, 'Usage: reply /fix <amount> — e.g. /fix 128.50', log)
+            return
+        }
+        const updated = await updateTotalByQuotedId(stanzaId, total)
+        if (!updated) {
+            await send(sock, jid, 'Nothing logged for that message.', log)
+            return
+        }
+        log.info({ rowId: updated.id }, 'bill amount fixed')
+        await send(
+            sock,
+            jid,
+            formatUpdated({ merchant: updated.merchant, total: Number(updated.total), category: updated.category }),
+            log,
+        )
+        return
+    }
+
+    if (cmd === 'receipt') {
+        // Manual bill, no photo. The command message's own id is the idempotency
+        // key and the primary /undo + /fix anchor — same role the image id plays.
+        const args = parseReceiptArgs(rest)
+        if (typeof args === 'string') {
+            await send(sock, jid, args, log)
+            return
+        }
+        let row
+        try {
+            row = await insertBill({
+                whatsapp_message_id: m.key.id!,
+                total: args.total,
+                merchant: args.merchant,
+                bill_date: dubaiDate(timestampMs(m)),
+                category: args.category,
+                confidence: null,
+            })
+        } catch (err) {
+            log.error({ err }, 'manual insert failed')
+            await send(sock, jid, "Couldn't save that bill — check the logs.", log)
+            return
+        }
+        if (!row) {
+            log.info('skipped: already logged') // duplicate delivery; don't confirm twice
+            return
+        }
+        log.info({ rowId: row.id }, 'manual bill inserted')
+
+        const today = await periodTotal(dubaiDayStart()).catch((err) => {
+            log.error({ err }, "today's total read failed")
+            return null
+        })
+        const sent = await send(
+            sock,
+            jid,
+            formatReceipt({ merchant: args.merchant, total: args.total, category: args.category }, today),
+            log,
+        )
+        if (sent?.key?.id) {
+            await setReplyMessageId(row.id, sent.key.id).catch((err) => log.error({ err }, 'setReplyMessageId failed'))
+        }
+        return
+    }
+
+    // Period summaries. The Record is keyed by exactly the three remaining commands,
+    // so adding a new Command without a handler above fails to compile here.
+    const PERIODS: Record<'today' | 'week' | 'month', { since: string; header: string }> = {
+        today: { since: dubaiDayStart(), header: "TODAY'S EXPENSES" },
+        week: { since: dubaiWeekStart(), header: "THIS WEEK'S EXPENSES" },
+        month: { since: dubaiMonthStart(), header: "THIS MONTH'S EXPENSES" },
+    }
+    const spec = PERIODS[cmd]
     const totals = await periodTotal(spec.since)
     await send(sock, jid, formatSummary(spec.header, totals), log)
 }
@@ -347,9 +425,9 @@ async function connectToWhatsApp(retry = 0, refetchVersion = true, isFirstConnec
                     continue
                 }
                 const text = m.message?.conversation ?? m.message?.extendedTextMessage?.text ?? ''
-                const cmd = parseCommand(text)
-                if (cmd) {
-                    await handleCommand(sock, m, cmd, log)
+                const parsed = parseCommand(text)
+                if (parsed) {
+                    await handleCommand(sock, m, parsed.cmd, parsed.rest, log)
                     continue
                 }
                 log.debug('skipped: not an image or a command')
