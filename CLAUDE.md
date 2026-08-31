@@ -42,11 +42,12 @@ non-receipt photos.
 ### Two environments (see `docs/PRD.md` §11)
 
 One codebase. **Testing:** Ahmad's laptop, Ahmad's WhatsApp number, `TARGET_CHAT_JID` unset
-(self-chat mode). **Production:** the friend's GCP VM, the dedicated bot number,
-`TARGET_CHAT_JID` = the business group's `@g.us`. The model
-(`dots-studio/dots-3-note-preview:free`, hardcoded) and the Supabase project (`blmqcc…`,
-single tenant, no `user_id`) are the same everywhere — the only differences are the WhatsApp
-identity, `TARGET_CHAT_JID`, the OpenRouter key, and where it runs.
+(self-chat mode), `BILLS_TABLE` unset (→ `bills_testing`). **Production:** the friend's GCP
+VM, the dedicated bot number, `TARGET_CHAT_JID` = the business group's `@g.us`,
+`BILLS_TABLE=bills`. The model (`dots-studio/dots-3-note-preview:free`, hardcoded) and the
+Supabase *project* (`blmqcc…`, single tenant, no `user_id`) are the same everywhere — the only
+differences are the WhatsApp identity, `TARGET_CHAT_JID`, `BILLS_TABLE`, the OpenRouter key,
+and where it runs.
 
 ## Commands
 
@@ -285,6 +286,21 @@ either is missing.
 **A dedicated Supabase project for this business** — *not* the calorie tracker's (that was an
 early assumption, dropped once this became a friend's business: separate billing, separate
 ownership, clean handoff). Run `supabase/schema.sql`. The receipt image is **not** persisted.
+
+**Two tables, one project.** `bills` is production; `bills_testing` takes every local/dev
+write. The switch is `BILLS_TABLE` in `.env`, read once in `db/client.ts` and exported as
+`BILLS_TABLE` (every `db/bills.ts` query uses it, plus `tests/test-db.ts`). **The default is
+`bills_testing`** — an unset var never touches real expenses. Production must set
+`BILLS_TABLE=bills`; `db/client.ts` **refuses to boot** if `TARGET_CHAT_JID` is set but
+`BILLS_TABLE` is not (the one case the safe default gets dangerous). Self-chat testing sets
+neither — unset `TARGET_CHAT_JID` makes the guard inert, unset `BILLS_TABLE` means the test
+table. Testing against a real group (PRD §11) must set `BILLS_TABLE=bills_testing` explicitly.
+The `WhatsApp connection opened` log prints `table:` so you can see which one is live.
+`bills_testing` was made with `create table bills_testing (like bills including all)` — a
+**snapshot**, not a mirror: any `ALTER` to `bills` must be repeated on it (see
+`supabase/schema.sql`). **Deploy ordering:** set `BILLS_TABLE=bills` in the VM's `.env`
+*before* this code reaches it — `.env` survives every `git reset --hard` deploy, so it's a
+one-time SSH edit.
 
 ```sql
 create table bills (

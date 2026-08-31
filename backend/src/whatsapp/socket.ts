@@ -14,6 +14,7 @@ import { reconnectPlan } from './reconnect.ts'
 import { fatal } from './fatal.ts'
 import { extractBill } from '../llm/client.ts'
 import { insertBill, periodTotal, setReplyMessageId, undoByQuotedId, updateTotalByQuotedId } from '../db/bills.ts'
+import { BILLS_TABLE } from '../db/client.ts'
 import {
     dubaiDate,
     dubaiDayStart,
@@ -375,7 +376,7 @@ async function connectToWhatsApp(retry = 0, refetchVersion = true, isFirstConnec
         } else if (connection === 'open') {
             openedAt = Date.now() // backoff resets only if this session lasts, see reconnect.ts
             logger.info(
-                { mode: TARGET ? `chat ${TARGET}` : 'self-chat (TARGET_CHAT_JID unset)' },
+                { mode: TARGET ? `chat ${TARGET}` : 'self-chat (TARGET_CHAT_JID unset)', table: BILLS_TABLE },
                 'WhatsApp connection opened',
             )
             if (isFirstConnect) {

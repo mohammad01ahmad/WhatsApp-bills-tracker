@@ -1,5 +1,5 @@
 import type { BillInsert } from '../utils/constants.ts'
-import { supabase } from './client.ts'
+import { BILLS_TABLE, supabase } from './client.ts'
 
 // WhatsApp message ids are short alphanumeric tokens. Guard before interpolating
 // into a PostgREST `.or()` filter string.
@@ -11,7 +11,7 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/
  * so a re-fired event hits error code 23505 and is treated as "already done".
  */
 export async function insertBill(bill: BillInsert) {
-    const { data, error } = await supabase.from('bills').insert(bill).select().single()
+    const { data, error } = await supabase.from(BILLS_TABLE).insert(bill).select().single()
 
     if (error?.code === '23505') return null
     if (error) throw error
@@ -20,7 +20,7 @@ export async function insertBill(bill: BillInsert) {
 
 /** Record the confirmation message's id so `/undo` can also target it. Best effort. */
 export async function setReplyMessageId(billId: string, replyMessageId: string) {
-    const { error } = await supabase.from('bills').update({ reply_message_id: replyMessageId }).eq('id', billId)
+    const { error } = await supabase.from(BILLS_TABLE).update({ reply_message_id: replyMessageId }).eq('id', billId)
     if (error) throw error
 }
 
@@ -29,7 +29,7 @@ export async function setReplyMessageId(billId: string, replyMessageId: string) 
  * ponytail: sums in JS, not a DB aggregate — a business logs tens of rows/day.
  */
 export async function periodTotal(sinceIso: string) {
-    const { data, error } = await supabase.from('bills').select('total, category').gte('created_at', sinceIso)
+    const { data, error } = await supabase.from(BILLS_TABLE).select('total, category').gte('created_at', sinceIso)
 
     if (error) throw error
 
@@ -52,7 +52,7 @@ export async function periodTotal(sinceIso: string) {
 export async function undoByQuotedId(stanzaId: string) {
     if (!SAFE_ID.test(stanzaId)) return null
     const { data, error } = await supabase
-        .from('bills')
+        .from(BILLS_TABLE)
         .delete()
         .or(`whatsapp_message_id.eq.${stanzaId},reply_message_id.eq.${stanzaId}`)
         .select()
@@ -69,7 +69,7 @@ export async function undoByQuotedId(stanzaId: string) {
 export async function updateTotalByQuotedId(stanzaId: string, total: number) {
     if (!SAFE_ID.test(stanzaId)) return null
     const { data, error } = await supabase
-        .from('bills')
+        .from(BILLS_TABLE)
         .update({ total })
         .or(`whatsapp_message_id.eq.${stanzaId},reply_message_id.eq.${stanzaId}`)
         .select()

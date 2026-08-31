@@ -22,3 +22,14 @@ create index if not exists bills_created_idx on bills (created_at desc);
 -- is built, add a select policy here matching whatever gate it uses (single-tenant,
 -- so likely a shared-credential gate + server-side reads rather than per-user RLS).
 alter table bills enable row level security;
+
+-- bills_testing: where local/dev runs write (BILLS_TABLE=bills_testing, the code
+-- default). Production sets BILLS_TABLE=bills; db/client.ts refuses to boot if
+-- TARGET_CHAT_JID is set but BILLS_TABLE is not.
+--
+-- LIKE ... INCLUDING ALL is a one-time SNAPSHOT of bills: columns, defaults, both
+-- check constraints, the PK, the unique index on whatsapp_message_id (idempotency
+-- depends on it), and the created_at index. It does NOT copy RLS, and it does NOT
+-- track later changes — any ALTER to bills above must be repeated here by hand.
+create table if not exists bills_testing (like bills including all);
+alter table bills_testing enable row level security;

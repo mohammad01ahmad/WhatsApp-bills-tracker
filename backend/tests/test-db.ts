@@ -2,7 +2,9 @@
 // after itself, so it's run manually, not by `npm test`.
 // Run: node --env-file=.env tests/test-db.ts
 import { insertBill, periodTotal, setReplyMessageId, undoByQuotedId, updateTotalByQuotedId } from '../src/db/bills.ts'
-import { supabase } from '../src/db/client.ts'
+import { BILLS_TABLE, supabase } from '../src/db/client.ts'
+
+console.log(`(using table: ${BILLS_TABLE})`)
 
 const msgId = 'TEST_' + Date.now()
 const replyId = 'REPLY_' + msgId
@@ -53,5 +55,5 @@ if (gone !== null) throw new Error('FAIL: second undo should find nothing')
 console.log('ok: undo is idempotent')
 
 // clean up any straggler (e.g. the duplicate path left something)
-await supabase.from('bills').delete().eq('whatsapp_message_id', msgId)
+await supabase.from(BILLS_TABLE).delete().eq('whatsapp_message_id', msgId)
 console.log('\nDB path works.')
