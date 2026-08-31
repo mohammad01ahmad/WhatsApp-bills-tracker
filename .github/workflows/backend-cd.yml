@@ -39,10 +39,6 @@ jobs:
 
   deploy:
     needs: verify
-    # push to main only, and only once the VM + secrets exist (set the repo
-    # variable DEPLOY_ENABLED=true — see docs/PRD.md §14). Until then this job
-    # is skipped, not failed.
-    if: github.event_name == 'push' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: SSH in and redeploy
