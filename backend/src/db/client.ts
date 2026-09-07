@@ -11,16 +11,18 @@ if (!supabaseUrl || !supabaseServiceRoleKey) {
 }
 
 // TARGET_CHAT_JID set = production. Refuse to boot rather than quietly write real
-// business expenses into the testing table because a .env line was missed.
-// Testing against a real group is still fine — set BILLS_TABLE=bills_testing.
+// business expenses into the testing table. Production gets BILLS_TABLE from
+// docker-compose.yml's environment: block, so this only bites a container run
+// outside Compose. Testing against a real group: set BILLS_TABLE=bills_testing.
 if (process.env.TARGET_CHAT_JID && !process.env.BILLS_TABLE) {
     throw new Error('TARGET_CHAT_JID is set (production) but BILLS_TABLE is not — set BILLS_TABLE=bills')
 }
 
 /**
  * Which table this process reads and writes. Defaults to the TESTING table on
- * purpose: an unset var must never silently touch the business's real expenses.
- * Production sets BILLS_TABLE=bills in its .env (see the guard above).
+ * purpose: an unset var must never silently touch the business's real expenses,
+ * so plain `npm start` is always safe. Production's `bills` is set in
+ * docker-compose.yml (environment: BILLS_TABLE=${BILLS_TABLE:-bills}).
  */
 export const BILLS_TABLE = process.env.BILLS_TABLE || 'bills_testing'
 

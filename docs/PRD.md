@@ -332,15 +332,15 @@ alter table bills enable row level security;
 
 ## 11. Environments
 
-One codebase. What changes between testing and production is the WhatsApp identity, two env
-vars (`TARGET_CHAT_JID`, `BILLS_TABLE`), the OpenRouter key, and where it runs — nothing else.
+One codebase. What changes between testing and production is the WhatsApp identity,
+`TARGET_CHAT_JID`, the target table, the OpenRouter key, and where it runs — nothing else.
 
 | | Testing | Production |
 |---|---|---|
 | Runs on | Ahmad's laptop, `npm start` | Friend's GCP `e2-micro`, `docker compose up -d` |
 | Linked to | Ahmad's WhatsApp number | The dedicated "Bills Bot" number |
 | `TARGET_CHAT_JID` | **unset** — self-chat mode | The business group's `…@g.us` JID |
-| `BILLS_TABLE` | **unset** → `bills_testing` | `bills` (set explicitly — the process refuses to boot if `TARGET_CHAT_JID` is set and this isn't) |
+| Target table | `bills_testing` — `db/client.ts` default when `BILLS_TABLE` is unset | `bills` — set in `docker-compose.yml` (`environment: BILLS_TABLE=${BILLS_TABLE:-bills}`), not the VM's `.env` |
 | OpenRouter key | Ahmad's | The friend's |
 | Model | `dots-studio/dots-3-note-preview:free` — hardcoded, same everywhere | |
 | Supabase project | `blmqcc…` — same everywhere (single tenant, no per-row `user_id`); two tables, `bills` + `bills_testing` | |
@@ -489,12 +489,10 @@ prerequisites first.
    OPENROUTER_API_KEY=<the friend's OpenRouter key>
    SUPABASE_URL=https://blmqccdupkejrvdbbydm.supabase.co
    SUPABASE_SERVICE_ROLE_KEY=<the sb_secret_… key from Supabase → Project Settings → API Keys>
-   BILLS_TABLE=bills
    LOG_LEVEL=info
    ```
-   `BILLS_TABLE=bills` is **required** in production — the code defaults to `bills_testing`,
-   and once `TARGET_CHAT_JID` is set (step 8) the process refuses to boot without it. Leave
-   `TARGET_CHAT_JID` out for now — it's set in step 8. (The model is hardcoded in
+   No `BILLS_TABLE` line here — `docker-compose.yml` sets it to `bills` for production.
+   Leave `TARGET_CHAT_JID` out for now — it's set in step 8. (The model is hardcoded in
    `src/llm/client.ts`, not here.)
 
 6. **First run — pair the dedicated number.** In the foreground so the QR is visible:

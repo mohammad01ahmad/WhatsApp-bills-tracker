@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Never commit to github or create a new branch without my permission 
 
 ## Status: tested end-to-end, not yet deployed to prod
 
@@ -43,11 +44,11 @@ non-receipt photos.
 
 One codebase. **Testing:** Ahmad's laptop, Ahmad's WhatsApp number, `TARGET_CHAT_JID` unset
 (self-chat mode), `BILLS_TABLE` unset (→ `bills_testing`). **Production:** the friend's GCP
-VM, the dedicated bot number, `TARGET_CHAT_JID` = the business group's `@g.us`,
-`BILLS_TABLE=bills`. The model (`dots-studio/dots-3-note-preview:free`, hardcoded) and the
-Supabase *project* (`blmqcc…`, single tenant, no `user_id`) are the same everywhere — the only
-differences are the WhatsApp identity, `TARGET_CHAT_JID`, `BILLS_TABLE`, the OpenRouter key,
-and where it runs.
+VM, the dedicated bot number, `TARGET_CHAT_JID` = the business group's `@g.us`, `bills` table
+(set in `docker-compose.yml`, not `.env`). The model (`dots-studio/dots-3-note-preview:free`,
+hardcoded) and the Supabase *project* (`blmqcc…`, single tenant, no `user_id`) are the same
+everywhere — the only differences are the WhatsApp identity, `TARGET_CHAT_JID`, the target
+table, the OpenRouter key, and where it runs.
 
 ## Commands
 
@@ -288,19 +289,19 @@ early assumption, dropped once this became a friend's business: separate billing
 ownership, clean handoff). Run `supabase/schema.sql`. The receipt image is **not** persisted.
 
 **Two tables, one project.** `bills` is production; `bills_testing` takes every local/dev
-write. The switch is `BILLS_TABLE` in `.env`, read once in `db/client.ts` and exported as
-`BILLS_TABLE` (every `db/bills.ts` query uses it, plus `tests/test-db.ts`). **The default is
-`bills_testing`** — an unset var never touches real expenses. Production must set
-`BILLS_TABLE=bills`; `db/client.ts` **refuses to boot** if `TARGET_CHAT_JID` is set but
-`BILLS_TABLE` is not (the one case the safe default gets dangerous). Self-chat testing sets
-neither — unset `TARGET_CHAT_JID` makes the guard inert, unset `BILLS_TABLE` means the test
-table. Testing against a real group (PRD §11) must set `BILLS_TABLE=bills_testing` explicitly.
-The `WhatsApp connection opened` log prints `table:` so you can see which one is live.
+write. The switch is `BILLS_TABLE`, read once in `db/client.ts` and exported (every
+`db/bills.ts` query uses it, plus `tests/test-db.ts`). **`db/client.ts` defaults to
+`bills_testing`** — an unset var never touches real expenses, so plain `npm start` is always
+safe. **Production sets `BILLS_TABLE=bills` in `docker-compose.yml`** (`environment:
+- BILLS_TABLE=${BILLS_TABLE:-bills}`), not the VM's `.env` — it ships with the code, no SSH
+edit needed. `db/client.ts` also **refuses to boot** if `TARGET_CHAT_JID` is set but
+`BILLS_TABLE` is not; in prod Compose always injects it, so this only bites a container run
+outside Compose. Self-chat testing sets neither. Testing against a real group (PRD §11), or a
+local `docker compose up` aimed at the test table, sets `BILLS_TABLE=bills_testing` in `.env`.
+The `WhatsApp connection opened` log prints `table:` so you can see which is live.
 `bills_testing` was made with `create table bills_testing (like bills including all)` — a
 **snapshot**, not a mirror: any `ALTER` to `bills` must be repeated on it (see
-`supabase/schema.sql`). **Deploy ordering:** set `BILLS_TABLE=bills` in the VM's `.env`
-*before* this code reaches it — `.env` survives every `git reset --hard` deploy, so it's a
-one-time SSH edit.
+`supabase/schema.sql`).
 
 ```sql
 create table bills (

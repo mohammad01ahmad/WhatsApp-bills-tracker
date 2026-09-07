@@ -23,9 +23,9 @@ create index if not exists bills_created_idx on bills (created_at desc);
 -- so likely a shared-credential gate + server-side reads rather than per-user RLS).
 alter table bills enable row level security;
 
--- bills_testing: where local/dev runs write (BILLS_TABLE=bills_testing, the code
--- default). Production sets BILLS_TABLE=bills; db/client.ts refuses to boot if
--- TARGET_CHAT_JID is set but BILLS_TABLE is not.
+-- bills_testing: where local/dev runs write. db/client.ts defaults BILLS_TABLE to
+-- bills_testing; production's `bills` is set in backend/docker-compose.yml's
+-- environment: block, so no VM .env edit is needed.
 --
 -- LIKE ... INCLUDING ALL is a one-time SNAPSHOT of bills: columns, defaults, both
 -- check constraints, the PK, the unique index on whatsapp_message_id (idempotency

@@ -11,6 +11,12 @@ services:
     # capped at 10 so a boot-time crash loop can't run forever.
     restart: on-failure:10
     env_file: .env
+    # Production runs via Compose, so Compose declares the prod table — no SSH edit
+    # of the VM's .env needed. Falls back to `bills` when BILLS_TABLE is unset;
+    # set BILLS_TABLE=bills_testing in .env to point a local `docker compose up` at
+    # the test table (`npm start` already defaults there via db/client.ts).
+    environment:
+      - BILLS_TABLE=${BILLS_TABLE:-bills}
     volumes:
       # Baileys session credentials — must survive container recreation on every
       # redeploy, or the bot loses its WhatsApp link and needs a fresh QR scan.
